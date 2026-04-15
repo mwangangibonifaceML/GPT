@@ -261,6 +261,9 @@ class DataLoaderLite:
 
 #* ================================================================================
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
+torch.manual_seed(1337)
+if torch.cuda.is_available():
+    torch.cuda.manual_seed(1337)
 
 # Create separate DataLoaderLite instances for train and validation
 train_dataloader = DataLoaderLite(train_data, B, T)
@@ -268,6 +271,7 @@ print(f'Got {train_dataloader.n_batches} batches for train split')
 val_dataloader = DataLoaderLite(val_data, B, T)
 print(f'Got {val_dataloader.n_batches} batches for validation split')
 
+torch.set_float32_matmul_precision('high')
 @torch.no_grad()
 def estimate_loss():
     out = {}
@@ -293,20 +297,27 @@ model.to(device)
 optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4)
 
 for iter in range(num_epochs):
+    t0 = time.time()
     # zero gradients from previous iteration
     optimizer.zero_grad()
-
-    # evaluate the model
-    if iter % eval_iters == 0:
-        losses = estimate_loss()
-        print(f"step {iter}: train loss {losses['train']:.4f}: val loss {losses['val']:.4f}")
 
     # forward pass
     xb, yb = train_dataloader.next_batch() # Fixed: Use train_dataloader here
     xb, yb = xb.to(device), yb.to(device)
-    logits, loss = model(xb, yb)
+
+    with torch.autocast(device_type=device, dtype=torch.float16):
+        logits, loss = model(xb, yb)
 
     # backward pass
     loss.backward()
     optimizer.step()
-    
+    torch.cuda.synchronize()
+
+    t1 = time.time()
+    dt = (t1 - t0) * 1000
+    tokens_per_sec = (B * T) / (dt / 1000)
+
+    # evaluate the model
+    if iter % eval_iters == 0:
+        losses = estimate_loss()
+        print(f"step {iter}: train loss {losses['train']:.4f}: val loss {losses['val']:.4f}: dt {dt:.4f}ms: token/sec {tokens_per_sec}")
