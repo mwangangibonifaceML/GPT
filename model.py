@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 import tqdm
+import tiktoken
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -218,6 +219,7 @@ model = GPT2.from_pretrained()
 
 #* tokenize the input text and batch it
 torch.manual_seed(42)
+tokenizer = tiktoken.get_encoding('gpt2')
 tokens = torch.tensor(tokenizer.encode('Hi, I am a Large Language Model'), dtype= torch.long)
 tokens = tokens.unsqueeze(0)
 
