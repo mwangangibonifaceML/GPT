@@ -1,0 +1,12 @@
+[project]
+name = "gpt"
+version = "0.1.0"
+description = "Building a GPT transformer from scratch using pytorch"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "kagglehub>=1.0.0",
+    "tiktoken>=0.12.0",
+    "torch>=2.11.0",
+    "transformers>=5.5.3",
+]
