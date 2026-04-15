@@ -272,6 +272,8 @@ val_dataloader = DataLoaderLite(val_data, B, T)
 print(f'Got {val_dataloader.n_batches} batches for validation split')
 
 torch.set_float32_matmul_precision('high')
+
+
 @torch.no_grad()
 def estimate_loss():
     out = {}
@@ -302,7 +304,7 @@ for iter in range(num_epochs):
     optimizer.zero_grad()
 
     # forward pass
-    xb, yb = train_dataloader.next_batch() # Fixed: Use train_dataloader here
+    xb, yb = train_dataloader.next_batch()
     xb, yb = xb.to(device), yb.to(device)
 
     with torch.autocast(device_type=device, dtype=torch.float16):
