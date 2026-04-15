@@ -79,7 +79,7 @@ class MultiHeadAttention(nn.Module):
             #* manual implementation
             att = (q @ k.transpose(-1,-2)) / (self.embed_dim ** 0.5)
             att = att.masked_fill(self.bias[:,:,:T,:T] == 0, float('-inf'))
-            att = torch.softmax(att, dim= -1, dtype = torch.long)
+            att = torch.softmax(att, dim= -1, dtype = torch.float32)
             att = self.attn_dropout(att)
             y = att @ v
             
@@ -130,7 +130,7 @@ class GPT2(nn.Module):
         ))
         self.lm_head = nn.Linear(config.embed_dim, config.vocab_size, bias=False)
         
-    def forward(self, idx: torch.Tensor,) -> torch.Tensor:
+    def forward(self, idx: torch.Tensor, targets: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor | None]:
         _,t = idx.size()
         positions = torch.arange(0,t, dtype= torch.long)
         
@@ -143,8 +143,10 @@ class GPT2(nn.Module):
             
         x = self.transformer.ln_f(x) 
         logits = self.lm_head(x)
-        
-        return logits
+        loss = None
+        if targets is not None:
+            loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1))
+        return logits, loss
     
     @torch.no_grad()
     def generate(self, idx: torch.Tensor, max_length: int,topk: int ) -> torch.Tensor:
@@ -212,18 +214,99 @@ class GPT2(nn.Module):
         return model
 
 #* ===========================================================================
-topk = 50
-max_length = 50
-num_return_sequences = 10
-model = GPT2.from_pretrained()
 
-#* tokenize the input text and batch it
-torch.manual_seed(42)
-tokenizer = tiktoken.get_encoding('gpt2')
-tokens = torch.tensor(tokenizer.encode('Hi, I am a Large Language Model'), dtype= torch.long)
-tokens = tokens.unsqueeze(0)
+#? Data loading and training loop
+with open('shakespeare.txt', 'r') as f:
+    text = f.read()
+    
+n = int(0.9 * len(text))
+train_data = text[:n]
+val_data = text[n:]
 
-#* generate text using from the input text
-next_tokens = model.generate(tokens, max_length= max_length, topk=topk)
-generated_text = tokenizer.decode(next_tokens.tolist()[0])
-print(f'Generated Text: ', generated_text)
+
+eval_iters = 5
+B, T = 4, 32
+num_epochs = 50
+
+class DataLoaderLite:
+    def __init__(self, data, batch_size, seq_length):
+        self.batch_size = batch_size
+        self.seq_length = seq_length
+        self.tokenizer = tiktoken.get_encoding("gpt2")
+        self.tokens = torch.tensor(self.tokenizer.encode(data), dtype=torch.long) 
+
+        len_data = len(self.tokens) 
+        # number of batches
+        self.n_batches = len_data // (batch_size * seq_length)
+
+        # current position
+        self.current_position = 0
+
+    def next_batch(self): 
+        B, T = self.batch_size, self.seq_length
+        buf = self.tokens
+
+        # Check if we need to reset for the next epoch
+        if self.current_position + B * T + 1 > len(buf):
+            self.current_position = 0
+
+        # get a full batch
+        x = buf[self.current_position : self.current_position + B*T].view(B,T)
+        y = buf[self.current_position+1 : self.current_position + B*T + 1].view(B,T)
+
+        # Advance current_position
+        self.current_position += B*T
+
+        return x,y
+
+#* ================================================================================
+device = 'cuda' if torch.cuda.is_available() else 'cpu'
+
+# Create separate DataLoaderLite instances for train and validation
+train_dataloader = DataLoaderLite(train_data, B, T)
+print(f'Got {train_dataloader.n_batches} batches for train split')
+val_dataloader = DataLoaderLite(val_data, B, T)
+print(f'Got {val_dataloader.n_batches} batches for validation split')
+
+@torch.no_grad()
+def estimate_loss():
+    out = {}
+    model.eval()
+    
+    #* Iterate over specific dataloaders for train and val splits
+    for split, dataloader_obj in [('train', train_dataloader), ('val', val_dataloader)]:
+        losses = torch.zeros(eval_iters)
+        for k in range(eval_iters):
+            x,y = dataloader_obj.next_batch()
+            x,y = x.to(device), y.to(device)
+            _, loss = model(x,y)
+            losses[k] = loss.item()
+        out[split] = losses.mean()
+    model.train()
+    return out
+
+
+#* =============================================================================
+
+model = GPT2(GPT2Config())
+model.to(device)
+optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4)
+
+for iter in range(num_epochs):
+    # zero gradients from previous iteration
+    optimizer.zero_grad()
+
+    # evaluate the model
+    if iter % eval_iters == 0:
+        losses = estimate_loss()
+        print(f"step {iter}: train loss {losses['train']:.4f}: val loss {losses['val']:.4f}")
+
+    # forward pass
+    xb, yb = train_dataloader.next_batch() # Fixed: Use train_dataloader here
+    xb, yb = xb.to(device), yb.to(device)
+    logits, loss = model(xb, yb)
+
+    # backward pass
+    loss.backward()
+    optimizer.step()
+    
